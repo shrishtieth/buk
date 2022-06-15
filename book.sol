@@ -729,7 +729,7 @@ contract ERC1155 is Context, ERC165, IERC1155, IERC1155MetadataURI {
         require(fromBalance >= amount, "ERC1155: burn amount exceeds balance");
         unchecked {
             _balances[id][from] = fromBalance - amount;
-        }
+                  }
 
         emit TransferSingle(operator, from, address(0), id, amount);
     }
@@ -1290,17 +1290,10 @@ library ECDSA {
 
 
 
-// 
+
 contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
     using Counters for Counters.Counter;
     Counters.Counter tokenCount;
-    Counters.Counter private _itemIds;     //count of sale items
-    Counters.Counter private _itemsSold;  //count of sold items
-    Counters.Counter private _itemsinActive;
-
-    address payable _seller;
-    address payable _minter;
-
 
     mapping(uint256 => string) public _uri;
     mapping(string => string) public hotelUri;
@@ -1311,7 +1304,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
     mapping(uint256 => uint256) public idToRoyalty;
     mapping(uint256 => address) public idToMinter;
 
-    uint256 public treasuryRoyalty = 2;
+
     address public treasury;
     address public signer;
 
@@ -1320,6 +1313,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
     event Minted(uint256 id, address minter);
     event Booked(address user, string hotel, string bookingId);
     event HotelRegistered(string id, string uri);
+    event Test(address sender);
 
     constructor(string memory NAME, address add, address _signer) ERC1155(NAME){
 
@@ -1329,46 +1323,12 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
 
         }
 
-        //struct for each market item
-  struct MarketItem {
-    uint itemId;
-    uint256 tokenId;
-    address payable seller;
-    address payable owner;
-    uint256 price;
-    bool sold;
-    bool isActive;
-  }
-
-  mapping(uint256 => MarketItem) public idToMarketItem;
-
-  event saleCreated (
-    uint indexed itemId,
-    uint256 indexed tokenId,
-    address seller,
-    address owner,
-    uint256 price,
-    bool sold,
-    bool isActive
-  );
-
-  event ItemBought(
-    uint indexed itemId,
-    uint256 indexed tokenId,
-    address buyer,
-    uint256 price,
-    bool sold,
-    bool isActive
-     );
 
      event CheckedIn(uint256 id, address user);
  
   
 
-           function setTreasuryRoyalty(uint256 _royalty) external onlyOwner {
-           treasuryRoyalty = _royalty;
-           }
-
+    
            function setSigner(address _signer) external onlyOwner{
                signer = _signer;
            }
@@ -1450,273 +1410,31 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         string memory hotel,
         string memory nonce,
         uint256 price
-    ) internal pure returns (bytes32) {
-        bytes32 hash = keccak256(
-            abi.encodePacked(
-                "\x19Ethereum Signed Message:\n32",
-                keccak256(abi.encodePacked(bookingId , user, hotel, nonce, price))
-            )
-        ); 
+    ) public pure returns (bytes32) {
+        bytes32 hash = keccak256(abi.encodePacked(bookingId , user, hotel, nonce, price));
         return hash;
     }
 
     function matchSigner(bytes32 hash, bytes memory signature)
-        internal
+        public
         view
         returns (bool)
     {
         return signer == ECDSA.recover(hash, signature);
     }
 
+    function getAddress(bytes32 hash, bytes memory signature)
+        public
+        pure
+        returns (address)
+    {
+        return ECDSA.recover(hash, signature);
+    }
+
     receive() external payable {}
     fallback() external payable {}
 
-    function createSale(
-    uint256 tokenId,
-    uint256 price, bytes memory signature, string memory nonce
-  ) external  nonReentrant {
-    require(price > 0, "Price must be at least 1 wei");
-     require(isApprovedForAll(msg.sender, address(this)),
-     "Caller must be approved or owner for token id");
-     require(balanceOf(msg.sender, tokenId)>0,"Balance 0");
-
-     require(!usedNonce[nonce], "Nonce used");
-               require(
-                matchSigner(
-                hashSaleTransaction(msg.sender, tokenId, price, nonce),
-                signature
-                ),
-                "Not allowed to lock"
-                );
-                 usedNonce[nonce] = true;
-
-
-    _itemIds.increment();
-    uint256 itemId = _itemIds.current();
-    idToMarketItem[itemId] =  MarketItem(
-      itemId,
-      tokenId,
-      payable(msg.sender),
-      payable(treasury),
-      price,
-      false,
-      true 
-    );
-
-    safeTransferFrom(msg.sender, address(this), tokenId, 1, ""); //nft gets transferred to the contract
-    emit saleCreated(
-      itemId,
-      tokenId,
-      msg.sender,
-      treasury,
-      price,
-      false,
-      true 
-    );
-  }
-
-
-   function hashSaleTransaction(
-        address user,
-        uint256 tokenId,
-        uint256 price,
-        string memory nonce
-    ) internal pure returns (bytes32) {
-        bytes32 hash = keccak256(
-            abi.encodePacked(
-                "\x19Ethereum Signed Message:\n32",
-                keccak256(abi.encodePacked(user , tokenId, price, nonce))
-            )
-        ); 
-        return hash;
-    }
-
-
-
-    function buyItem(
-    uint256 itemId, string memory nonce, bytes memory signature
-    ) external payable nonReentrant   {
-    require(itemId <= _itemIds.current(), " Enter a valid Id");
-    require( idToMarketItem[itemId].isActive==true,"the sale is not active");
-    require(msg.sender!= idToMarketItem[itemId].seller,"seller cannot buy");
-
-    uint price = idToMarketItem[itemId].price;
-    uint tokenId = idToMarketItem[itemId].tokenId;
-
-    require(!usedNonce[nonce], "Nonce used");
-               require(
-                matchSigner(
-                hashSaleTransaction(msg.sender, tokenId, price, nonce),
-                signature
-                ),
-                "Not allowed to lock"
-                );
-                 usedNonce[nonce] = true;
-
-    
-
-    require(msg.value == price, "Please submit the asking price in order to complete the purchase");
-    require( idToMarketItem[itemId].sold == false,"Already Sold");
-
-     _seller = idToMarketItem[itemId].seller;
-     _minter = payable(idToMinter[tokenId]);
-    uint256 royalty = idToRoyalty[tokenId];
-
-    if(royalty !=0){
-
-
-    uint256 amountToadmin = ((msg.value)*((treasuryRoyalty)))/(100) ;
-    uint256 remainingAmount = (msg.value)-(amountToadmin);
-    uint256 amountTominter = ((remainingAmount)*((royalty)))/(100) ;
-    uint256 amountToSeller = (remainingAmount)-(amountTominter);
-     payable(_minter).transfer(amountTominter);
-     payable(treasury).transfer(amountToadmin);
-    payable(_seller).transfer(amountToSeller);
-
-
-    }
-    else{
-
-
-    uint256 amountToadmin = ((msg.value)*((treasuryRoyalty)))/(100) ;
-    uint256 remainingAmount = (msg.value)-(amountToadmin);
-    payable(treasury).transfer(amountToadmin);
-    payable(_seller).transfer(remainingAmount);
-
-
-    }
-
-    safeTransferFrom(address(this), msg.sender, tokenId,1,"");
-
-    idToMarketItem[itemId].owner = payable(msg.sender);
-    idToMarketItem[itemId].sold = true;
-    idToMarketItem[itemId].isActive = false;
-    _itemsSold.increment();
-    _itemsinActive.increment();
-
-     emit ItemBought(
-      itemId,
-      tokenId,
-      msg.sender,
-      msg.value,
-      true,
-      false
-     );
-    
-  } 
-
-
-  function EndSale(uint256 itemId) external nonReentrant {
-       require(itemId <= _itemIds.current(), " Enter a valid Id");
-      require(msg.sender==idToMarketItem[itemId].seller
-       && idToMarketItem[itemId].sold == false && idToMarketItem[itemId].isActive == true,"Cannot End Sale" );
-      idToMarketItem[itemId].isActive = false;
-      _itemsinActive.increment();
-      safeTransferFrom(address(this), msg.sender, idToMarketItem[itemId].tokenId,1,"");
-      
-  }
-
-  /* Returns all unsold market items */
-  function fetchMarketItems() public view returns (MarketItem[] memory) {
-    uint itemCount = _itemIds.current();
-    uint unsoldItemCount = _itemIds.current()-(_itemsinActive.current());
-    uint currentIndex = 0;
-
-    MarketItem[] memory items = new MarketItem[](unsoldItemCount);
-    for (uint i = 0; i < itemCount; i++) {
-      if ( idToMarketItem[i+(1)].isActive ==true )
-      {
-        uint currentId = i+(1);
-        MarketItem storage currentItem = idToMarketItem[currentId];
-        items[currentIndex] = currentItem;
-        currentIndex = currentIndex+(1);
-      }
-    }
-    return items;
-  }
-
-  /* Returns  items that a user has purchased */
-  function fetchMyNFTs() public view returns (MarketItem[] memory) {
-    uint totalItemCount = _itemIds.current();
-    uint itemCount = 0;
-    uint currentIndex = 0;
-
-    for (uint i = 0; i < totalItemCount; i++) {
-      if (idToMarketItem[i+(1)].owner == msg.sender) {
-        itemCount = itemCount+(1) ;
-      }
-    }
-
-    MarketItem[] memory items = new MarketItem[](itemCount);
-    for (uint i = 0; i < totalItemCount; i++) {
-      if (idToMarketItem[i+(1)].owner == msg.sender) {
-        uint currentId = i+(1);
-        MarketItem storage currentItem = idToMarketItem[currentId];
-        items[currentIndex] = currentItem;
-        currentIndex = currentIndex+(1);
-      }
-    }
-    return items;
-  }
-    
-
-  /* Returns only items a user has created */
-  function fetchItemsCreated() public view returns (MarketItem[] memory) {
-    uint totalItemCount = _itemIds.current();
-    uint itemCount = 0;
-    uint currentIndex = 0;
-
-    for (uint i = 0; i < totalItemCount; i++) {
-      if (idToMarketItem[i+(1)].seller == msg.sender) {
-        itemCount = itemCount+(1);
-      }
-    }
-    MarketItem[] memory items = new MarketItem[](itemCount);
-    for (uint i = 0; i < totalItemCount; i++) {
-      if (idToMarketItem[i+(1)].seller == msg.sender) {
-        uint currentId = i+(1);
-        MarketItem storage currentItem = idToMarketItem[currentId];
-        items[currentIndex] = currentItem;
-        currentIndex = currentIndex+(1) ;
-      }
-    }
-    return items;
-  }
-
-  function checkIn(uint256[] memory tokenId, string memory nonce, bytes memory signature) external{
-
-        require(!usedNonce[nonce], "Nonce used");
-               require(
-                matchSigner(
-                hashCheckInTransaction(msg.sender,nonce),
-                signature
-                ),
-                "Not allowed to lock"
-                );
-                 usedNonce[nonce] = true;
-        
-        uint256 total = tokenId.length;
-        for(uint256 i=0; i< total; i++){
-            require(balanceOf(msg.sender, tokenId[i])>0,"Balance 0");
-            transferBlocked[tokenId[i]] = true;
-            emit CheckedIn(tokenId[i], msg.sender);
-        }
-  }
-
-  function hashCheckInTransaction(
-        address user,
-        string memory nonce
-    ) internal pure returns (bytes32) {
-        bytes32 hash = keccak256(
-            abi.encodePacked(
-                "\x19Ethereum Signed Message:\n32",
-                keccak256(abi.encodePacked(user , nonce,"User Check In"))
-            )
-        ); 
-        return hash;
-    }
-   
-
+ 
    function safeTransferFrom(
         address from,
         address to,
