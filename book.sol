@@ -1294,26 +1294,35 @@ library ECDSA {
 contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
     using Counters for Counters.Counter;
     Counters.Counter tokenCount;
+    Counters.Counter hotelCount;
 
     mapping(uint256 => string) public _uri;
-    mapping(string => string) public hotelUri;
-    mapping(uint256 => string) public nftToHotel;
+    mapping(uint256 => uint256) public nftToHotel;
     mapping(uint256 => bool) public transferBlocked;
     mapping(address => bool) public allowedToTransfer;
 
+    mapping(uint256 => Hotel) public idToHotel;
+
     mapping(uint256 => uint256) public idToRoyalty;
     mapping(uint256 => address) public idToMinter;
-
+    
 
     address public treasury;
     address public signer;
 
     mapping(string => bool) public usedNonce;
 
+    struct Hotel{
+        string hotelId;
+        string hotelUri;
+        address hotelManager;
+        uint256 index;
+    }
+ 
     event Minted(uint256 id, address minter);
-    event Booked(address user, string hotel, string bookingId);
-    event HotelRegistered(string id, string uri);
-    event Test(address sender);
+    event Booked(address user, uint256 hotel, string bookingId);
+    event HotelRegistered(Hotel hotelDetails);
+    event CheckedIn(uint256 id, address user);
 
     constructor(string memory NAME, address add, address _signer) ERC1155(NAME){
 
@@ -1322,13 +1331,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
        allowedToTransfer[address(this)] = true;
 
         }
-
-
-     event CheckedIn(uint256 id, address user);
- 
-  
-
-    
+   
            function setSigner(address _signer) external onlyOwner{
                signer = _signer;
            }
@@ -1355,8 +1358,34 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         return this.onERC1155BatchReceived.selector;
         }
 
+        function registerHotel(Hotel memory hotelDetails,
+         string memory nonce, bytes memory signature) external{
+
+             require(!usedNonce[nonce], "Nonce used");
+               require(
+                matchSigner(
+                hashHotelRegistrationTransaction(hotelDetails.hotelId, nonce),
+                signature
+                ),
+                "Not allowed to lock"
+                );
+                 usedNonce[nonce] = true;
+                uint256 count = hotelCount.current();
+                idToHotel[count] = Hotel({
+                 hotelId : hotelDetails.hotelId,
+                 hotelUri : hotelDetails.hotelUri,
+                 hotelManager : hotelDetails.hotelManager,
+                 index : count
+                });
+                hotelCount.increment();
+
+                emit HotelRegistered(idToHotel[count]);
+
+
+         }
+
         function bookRoom(string[] memory bookingUri, uint256[] memory royalty, string memory bookingId,
-         address user, string memory hotel, bytes memory signature, string memory nonce) external payable {  
+         address user, uint256 hotel, bytes memory signature, string memory nonce) external payable {  
 
                require(!usedNonce[nonce], "Nonce used");
                require(
@@ -1382,7 +1411,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         return _uri[id];
        }
 
-       function mintNft(address creator, uint256 royalty, string memory roomUri, string memory hotel) 
+       function mintNft(address creator, uint256 royalty, string memory roomUri, uint256 hotel) 
        private returns(uint256 id){
            
            require(royalty <100,"Limit Exceeded");
@@ -1407,13 +1436,24 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
        function hashTransaction(
         string memory bookingId,
         address user,
-        string memory hotel,
+        uint256 hotel,
         string memory nonce,
         uint256 price
     ) public pure returns (bytes32) {
         bytes32 hash = keccak256(abi.encodePacked(bookingId , user, hotel, nonce, price));
         return hash;
     }
+
+
+    function hashHotelRegistrationTransaction(
+        string memory hotelId,
+        string memory nonce
+    ) public pure returns (bytes32) {
+        bytes32 hash = keccak256(abi.encodePacked(hotelId , nonce));
+        return hash;
+    }
+
+
 
     function matchSigner(bytes32 hash, bytes memory signature)
         public
