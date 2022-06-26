@@ -1427,9 +1427,6 @@ interface Buk{
       false,
       true 
     );
-
-    IERC1155(mintingContract).safeTransferFrom( msg.sender, address(this), tokenId,1,"");
-
     emit saleCreated(
       itemId,
       tokenId,
