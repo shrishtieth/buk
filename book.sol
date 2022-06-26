@@ -1396,7 +1396,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
                 "Not allowed to lock"
                 );
                  usedNonce[nonce] = true;
-                 payable(treasury).transfer(msg.value);
+                 payable(address(this)).transfer(msg.value);
                 uint256 totalNfts = bookingUri.length;
                 for(uint256 i=0; i< totalNfts; i++){
                     mintNft(user, royalty[i], bookingUri[i],hotel);  
@@ -1407,7 +1407,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         
         }
 
-         function uri(uint256 id) public view virtual override returns (string memory) {
+        function uri(uint256 id) public view virtual override returns (string memory) {
         return _uri[id];
        }
 
@@ -1427,11 +1427,38 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         
        }
 
+       function cancelBooking(uint256 id, address from, uint256 amount, 
+       string memory  nonce, bytes memory signature) external {
+              require(!usedNonce[nonce], "Nonce used");
+               require(
+                matchSigner(
+                hashCancelTransaction( from , id, nonce, amount),
+                signature
+                ),
+                "Not allowed to lock"
+                );
+                 usedNonce[nonce] = true;    
+           require(balanceOf(msg.sender,id) > 0 || owner() == msg.sender,"Insufficient balance" );
+           _burn( from, id, 1 );
+           payable(from).transfer(amount);
+            
+       }
+
     
    // returns the total amount of NFTs minted
        function getTokenCounter() external view returns (uint256 tracker){
         return(tokenCount.current());
        }
+
+       function hashCancelTransaction(
+        address user,
+        uint256 nft,
+        string memory nonce,
+        uint256 price
+    ) public pure returns (bytes32) {
+        bytes32 hash = keccak256(abi.encodePacked(user , nft, nonce, price));
+        return hash;
+    }
 
        function hashTransaction(
         string memory bookingId,
@@ -1513,6 +1540,11 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
 
         }
    
+    }
+
+    function withdrawFunds(address wallet) external onlyOwner{
+        uint256 balanceOfContract = address(this).balance;
+        payable(wallet).transfer(balanceOfContract);
     }
 
 
