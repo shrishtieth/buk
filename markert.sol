@@ -1343,7 +1343,7 @@ interface Buk{
     bool isActive
   );
 
-  event ItemBought(
+    event ItemBought(
     uint indexed itemId,
     uint256 indexed tokenId,
     address buyer,
@@ -1351,6 +1351,8 @@ interface Buk{
     bool sold,
     bool isActive
      );
+
+     event ListingEdited(uint256 itemId, uint256 price);
 
      event CheckedIn(uint256 id, address user);
  
@@ -1449,6 +1451,24 @@ interface Buk{
         return hash;
     }
 
+    function editListing(uint256 itemId, string memory nonce, bytes memory signature, uint256 newPrice)
+    external {
+        require(msg.sender == idToMarketItem[itemId].seller, "Only seller can edit");
+        require(!usedNonce[nonce], "Nonce used");
+               require(
+                matchSigner(
+                hashSaleTransaction(msg.sender, itemId, newPrice, nonce),
+                signature
+                ),
+                "Not allowed to lock"
+                );
+                 usedNonce[nonce] = true;
+
+        emit ListingEdited(itemId, newPrice);
+    
+
+    }
+
 
    
     function buyItem(
@@ -1464,7 +1484,7 @@ interface Buk{
     require(!usedNonce[nonce], "Nonce used");
                require(
                 matchSigner(
-                hashSaleTransaction(msg.sender, tokenId, price, nonce),
+                hashSaleTransaction(msg.sender, itemId, price, nonce),
                 signature
                 ),
                 "Not allowed to lock"
