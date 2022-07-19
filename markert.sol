@@ -1,3 +1,7 @@
+/**
+ *Submitted for verification at polygonscan.com on 2022-07-01
+*/
+
 // SPDX-License-Identifier: MIT 
 pragma solidity 0.8.9;
 interface IERC165 {
@@ -1406,7 +1410,8 @@ interface Buk{
      require(IERC1155(mintingContract).isApprovedForAll(msg.sender, address(this)),
      "Caller must be approved or owner for token id");
      require(IERC1155(mintingContract).balanceOf(msg.sender, tokenId)>0,"Balance 0");
-
+    uint256 item = getTokenToItem(tokenId);
+    require(item == 0, "Item already on Sale");
      require(!usedNonce[nonce], "Nonce used");
                require(
                 matchSigner(
@@ -1550,13 +1555,26 @@ interface Buk{
   function EndSale(uint256 itemId) external nonReentrant {
 
        require(itemId <= _itemIds.current(), " Enter a valid Id");
-      require(msg.sender==idToMarketItem[itemId].seller
+      require((msg.sender==idToMarketItem[itemId].seller || msg.sender == mintingContract)
        && idToMarketItem[itemId].sold == false && idToMarketItem[itemId].isActive == true,"Cannot End Sale" );
       idToMarketItem[itemId].isActive = false;
       _itemsinActive.increment();
     
       
   }
+
+  function getTokenToItem(uint256 token) public view returns(uint256 itemId){
+    uint itemCount = _itemIds.current();
+    uint256 saleId;
+    for (uint i = 0; i < itemCount; i++) {
+      if ( idToMarketItem[i+(1)].isActive ==true &&
+      idToMarketItem[i+(1)].tokenId == token)
+      {
+       saleId = i+1;
+      }
+    }
+    return(saleId);
+   }
 
   /* Returns all unsold market items */
   function fetchMarketItems() public view returns (MarketItem[] memory) {
