@@ -1,5 +1,84 @@
 // SPDX-License-Identifier: MIT 
 pragma solidity 0.8.9;
+
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
 interface IERC165 {
     /**
      * @dev Returns true if this contract implements the interface defined by
@@ -1302,13 +1381,18 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
     mapping(address => bool) public allowedToTransfer;
 
     mapping(uint256 => Hotel) public idToHotel;
-
-    mapping(uint256 => uint256) public idToRoyalty;
+    mapping(uint256 => Booking) public bookingDetails;
     mapping(uint256 => address) public idToMinter;
     
 
     address public treasury;
     address public signer;
+    uint256 public platformFee;
+    uint256 public cancellationFee;
+    address public usdc;
+    uint256 public checkInTime;
+    uint256 public checkOutTime;
+    address public checkOutBot;
 
     mapping(string => bool) public usedNonce;
 
@@ -1316,18 +1400,29 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         string hotelId;
         string hotelUri;
         address hotelManager;
+        address hotelTreasury;
         uint256 index;
     }
- 
+
+    struct Booking{
+        string nftUri;
+        string bookingId;
+        uint256 price;
+        uint256 hotelId;
+        uint256 time;
+    
+    }
+
     event Minted(uint256 id, address minter);
-    event Booked(address user, uint256 hotel, string bookingId);
+    event Booked(address user, uint256 hotel, uint256 nftId);
     event HotelRegistered(Hotel hotelDetails);
     event CheckedIn(uint256 id, address user);
 
-    constructor(string memory NAME, address add, address _signer) ERC1155(NAME){
+    constructor(string memory NAME, address _treasury, address _signer, address _usdc ) ERC1155(NAME){
 
-       treasury = add;
+       treasury = _treasury;
        signer = _signer;
+       usdc = _usdc;    
        allowedToTransfer[address(this)] = true;
 
         }
@@ -1340,11 +1435,6 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
             treasury = payable(_treasury);
              }
 
-             function updateRoyalty(uint256 tokenId, uint256 royalty) external{
-                 require(idToMinter[tokenId] == msg.sender, " Only minter can update");
-                 require(royalty <100,"Limit Exceeded");
-                 idToRoyalty[tokenId] = royalty;
-             }
 
             function updateAllowedToTransfer(address user, bool allowed) external onlyOwner{
                 allowedToTransfer[user] = allowed;
@@ -1375,6 +1465,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
                  hotelId : hotelDetails.hotelId,
                  hotelUri : hotelDetails.hotelUri,
                  hotelManager : hotelDetails.hotelManager,
+                 hotelTreasury : hotelDetails.hotelTreasury,
                  index : count
                 });
                 hotelCount.increment();
@@ -1384,42 +1475,51 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
 
          }
 
-        function bookRoom(string[] memory bookingUri, uint256[] memory royalty, string memory bookingId,
-         address user, uint256 hotel, bytes memory signature, string memory nonce) external payable {  
+         function updateHotelDetails(Hotel memory hotel) external {
+             require(msg.sender == owner() || msg.sender == idToHotel[hotel.index].hotelManager,"Access Denied");
+             idToHotel[hotel.index] = hotel;
+         }
 
+        function bookRoom(Booking[] memory booking,
+         address user,bytes memory signature, string memory nonce, uint256 totalAmount) external {  
+
+               
                require(!usedNonce[nonce], "Nonce used");
                require(
                 matchSigner(
-                hashTransaction(bookingId, user, hotel, nonce, msg.value),
+                hashTransaction(user, nonce, totalAmount),
                 signature
                 ),
                 "Not allowed to lock"
                 );
                  usedNonce[nonce] = true;
-                 payable(address(this)).transfer(msg.value);
-                uint256 totalNfts = bookingUri.length;
-                for(uint256 i=0; i< totalNfts; i++){
-                    mintNft(user, royalty[i], bookingUri[i],hotel);  
-                }
 
-                emit Booked(user, hotel, bookingId);
+                uint256 totalNfts = booking.length;
+                uint256 amount;
+                for(uint256 i=0; i< totalNfts; i++){
+                IERC20(usdc).transferFrom(msg.sender, treasury, (booking[i].price*platformFee)/10000);
+                IERC20(usdc).transferFrom(msg.sender, address(this), booking[i].price);
+                 uint256 id = mintNft(user, booking[i].nftUri ,booking[i].hotelId);
+                 bookingDetails[id] = booking[i]; 
+                 amount += booking[i].price + ((booking[i].price*platformFee)/10000);
+                emit Booked(user, booking[i].hotelId, id);
+                }
     
-        
+
         }
 
         function uri(uint256 id) public view virtual override returns (string memory) {
         return _uri[id];
        }
 
-       function mintNft(address creator, uint256 royalty, string memory roomUri, uint256 hotel) 
+       function mintNft(address creator, string memory roomUri, uint256 hotel) 
        private returns(uint256 id){
            
-           require(royalty <100,"Limit Exceeded");
+        
            uint256 nftId = tokenCount.current();
            _uri[nftId] = roomUri;
            _mint(creator,nftId,1,"");
            nftToHotel[nftId] = hotel;
-           idToRoyalty[nftId] = royalty;
            idToMinter[nftId] = creator;
            tokenCount.increment();
            emit Minted(nftId,creator);
@@ -1427,21 +1527,64 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         
        }
 
-       function cancelBooking(uint256 id, address from, uint256 amount, 
+       function cancelBookingUser(uint256 id,
        string memory  nonce, bytes memory signature) external {
+              require(block.timestamp < bookingDetails[id].time,"Cancel window closed");
+              uint256 amount = bookingDetails[id].price;
               require(!usedNonce[nonce], "Nonce used");
                require(
                 matchSigner(
-                hashCancelTransaction( from , id, nonce, amount),
+                hashCancelTransaction( msg.sender , id, nonce, amount),
                 signature
                 ),
                 "Not allowed to lock"
                 );
                  usedNonce[nonce] = true;    
-           require(balanceOf(msg.sender,id) > 0 || owner() == msg.sender,"Insufficient balance" );
-           _burn( from, id, 1 );
-           payable(from).transfer(amount);
+           require(balanceOf(msg.sender,id) > 0 ||
+            owner() == msg.sender || msg.sender == idToHotel[bookingDetails[id].hotelId].hotelManager,"Access Denied" );
+           _burn( msg.sender, id, 1 );
+           if( owner() == msg.sender || msg.sender == idToHotel[bookingDetails[id].hotelId].hotelManager){
+           IERC20(usdc).transferFrom( address(this), msg.sender, amount);
+           }
+           else{
+            uint256 fee =  amount*cancellationFee/10000;
+            IERC20(usdc).transferFrom( address(this), msg.sender, amount - fee); 
+           }
+       
             
+       }
+
+       function checkIn(uint256 id, string memory  nonce, bytes memory signature) external {
+         require(balanceOf(msg.sender,id) > 0 || owner() == msg.sender,"Access Denied" );  
+         require(block.timestamp > bookingDetails[id].time - checkInTime,"CheckIn window closed");
+         require(!usedNonce[nonce], "Nonce used");
+               require(
+                matchSigner(
+                hashCheckInTransaction( msg.sender , id, nonce),
+                signature
+                ),
+                "Not allowed to lock"
+                );
+                 usedNonce[nonce] = true;   
+         transferBlocked[id] = true;
+       }
+
+       function checkOut(uint256 id, address user, string memory  nonce, bytes memory signature) external {
+         require(balanceOf(msg.sender,id) > 0 || owner() == msg.sender || msg.sender == checkOutBot,
+         "Access Denied" );  
+         require(transferBlocked[id],"NFT wasn't checked In" );
+         require(block.timestamp > bookingDetails[id].time + checkOutTime,"CheckOut window closed");
+         require(!usedNonce[nonce], "Nonce used");
+               require(
+                matchSigner(
+                hashCheckInTransaction( user , id, nonce),
+                signature
+                ),
+                "Not allowed to lock"
+                );
+                 usedNonce[nonce] = true;   
+        _burn( user, id, 1 ); 
+        IERC20(usdc).transferFrom( address(this), msg.sender, bookingDetails[id].price);
        }
 
     
@@ -1460,14 +1603,21 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         return hash;
     }
 
-       function hashTransaction(
-        string memory bookingId,
+    function hashCheckInTransaction(
         address user,
-        uint256 hotel,
-        string memory nonce,
-        uint256 price
+        uint256 nft,
+        string memory nonce
     ) public pure returns (bytes32) {
-        bytes32 hash = keccak256(abi.encodePacked(bookingId , user, hotel, nonce, price));
+        bytes32 hash = keccak256(abi.encodePacked(user , nft, nonce));
+        return hash;
+    }
+
+       function hashTransaction(
+        address user,
+        string memory nonce,
+        uint256 amount
+    ) public pure returns (bytes32) {
+        bytes32 hash = keccak256(abi.encodePacked(user, nonce, amount));
         return hash;
     }
 
