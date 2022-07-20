@@ -1367,6 +1367,7 @@ library ECDSA {
     }
 }
 
+// Buk Marketplace contract interface
 interface BukMarket{
     function endSale(uint256 itemId) external;
     function getTokenToItem(uint256 token) external view returns(uint256 itemId);
@@ -1375,45 +1376,48 @@ interface BukMarket{
 
 contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
     using Counters for Counters.Counter;
-    Counters.Counter tokenCount;
-    Counters.Counter hotelCount;
+    Counters.Counter tokenCount; // NFT Id counter for each booking
+    Counters.Counter hotelCount; // Hotel Ids
 
-    mapping(uint256 => string) public _uri;
-    mapping(uint256 => uint256) public nftToHotel;
-    mapping(uint256 => bool) public transferBlocked;
-    mapping(address => bool) public allowedToTransfer;
+    mapping(uint256 => string) public _uri; // NFT Metadata
+    mapping(uint256 => uint256) public nftToHotel; // returns hotel id of a particular Nft
+    mapping(uint256 => bool) public transferBlocked; // checks if transfer has been blocked (after Pre Check In)
+    mapping(address => bool) public allowedToTransfer; // address allowed to transfer Nfts
 
-    mapping(uint256 => Hotel) public idToHotel;
-    mapping(uint256 => Booking) public bookingDetails;
-    mapping(uint256 => address) public idToMinter;
+    mapping(uint256 => Hotel) public idToHotel; // return hotel details when hotel id is entered
+    mapping(uint256 => Booking) public bookingDetails; // returns booking details when nft id is entered
+    mapping(uint256 => address) public idToMinter; // returns minter of an Nft
     
 
-    address public treasury;
-    address public signer;
-    uint256 public platformFee;
-    uint256 public cancellationFee;
-    address public currency;
-    uint256 public checkInTime;
-    uint256 public checkOutTime;
-    address public checkOutBot;
-    address public marketplaceContract;
+    address public treasury; // platform treasury to receive platform fee
+    address public signer; // signer wallet that signs the message we decrypt in function calls
+    uint256 public platformFee; // Buk Platform Fee
+    uint256 public cancellationFee; // Cancellation fee when bookings are cancelled, received by the platform treasury
+    address public currency; // currency used for transactions (e.g -usdc)
+    uint256 public checkInTime = 172800; 
+    // Time before booking time when check in window opens (e.g - 48 hours before)
+    uint256 public checkOutTime = 86400;
+    // Time after booking time when check out window opens (e.g - 24 hours after)
+    address public checkOutBot; //address that calls checkOut function automatically after 24 hours of check out
+    address public marketplaceContract; // Buk Nft Marketplace
+    mapping(string => bool) public usedNonce; // checks if nonce has been used or not
 
-    mapping(string => bool) public usedNonce;
-
+    // Hotel Details Structure 
     struct Hotel{
-        string hotelId;
-        string hotelUri;
-        address hotelManager;
-        address hotelTreasury;
-        uint256 index;
+        string hotelId; // database if of hotel
+        string hotelUri; // hotel uri
+        address hotelManager; // To manage operational activities 
+        address hotelTreasury; // To receive booking funds
+        uint256 index; // unique hotel Id
     }
 
+    // Booking Details Structure
     struct Booking{
-        string nftUri;
-        string bookingId;
-        uint256 price;
-        uint256 hotelId;
-        uint256 time;
+        string nftUri; // nft Uri
+        string bookingId; // database booking id
+        uint256 price; // booking cost
+        uint256 hotelId; // hotel Id of the room booked
+        uint256 time; //Booking Time(start time of the stay)
     
     }
 
@@ -1444,62 +1448,74 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
        allowedToTransfer[address(this)] = true;
     }
 
+    //Function to set Buk Marketplace Contract
     function setMarketplace(address _bukMarket) external onlyOwner{
         marketplaceContract = _bukMarket;
         emit MarketplaceContractUpdated(_bukMarket);
     }
    
+    // Function to set signer wallet Address
     function setSigner(address _signer) external onlyOwner{
         signer = _signer;
         emit SignerUpdated(_signer);
     }
 
+    // Function to set treasury address
     function setTreasury(address _treasury) external onlyOwner {
         treasury = payable(_treasury);
         emit TreasuryUpdated(_treasury);
     }
-
+    
+    // Function to update Hotel details
     function updateHotelDetails(Hotel memory hotel) external {
         require(msg.sender == owner() || msg.sender == idToHotel[hotel.index].hotelManager,"Access Denied");
         idToHotel[hotel.index] = hotel;
         emit HotelDetailsUpdated(hotel.index);
     }
 
+    // Function to update transfer allowance
     function updateAllowedToTransfer(address user, bool allowed) external onlyOwner{
         allowedToTransfer[user] = allowed;
         emit TransferAllowanceUpdated(user, allowed);
     }
 
+    // Function to update Platform Fee
     function updatedPlatformFee(uint256 fee) external onlyOwner{
         platformFee = fee;
         emit PlatformFeeUpdated(fee);
     }
 
+    // Function to update Cancellation Fee
     function updateCancellationFee(uint256 fee) external onlyOwner{
         cancellationFee = fee;
         emit CancellationFeeUpdated(fee);
     }
 
+    // Function to update Currency
     function updateCurrency(address _currency) external onlyOwner{
         currency = _currency;
         emit CurrencyAddressUpdated(_currency);
     }
 
+    // Function to update Checkin window time;
     function updateCheckinTime(uint256 time) external onlyOwner{
         checkInTime = time;
         emit CheckinTimeUpdated(time);
     }
 
+    // Function to update Checkout window time;
     function updateCheckoutTime(uint256 time) external onlyOwner{
         checkOutTime = time;
         emit CheckoutTimeUpdated(time); 
     }
 
+    // Function to update Checkout bot address;
     function updateCheckoutBot(address bot) external onlyOwner{
         checkOutBot = bot;
         emit CheckoutBotupdated(bot); 
     }
 
+    // Function to update token Uri
     function updateUri(uint256 tokenId, string memory tokenUri) external onlyOwner{
         _uri[tokenId] = tokenUri;
         emit UriUpdated(tokenId, tokenUri);
@@ -1513,6 +1529,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         return this.onERC1155BatchReceived.selector;
     }
 
+    // Function to register hotels
     function registerHotel(Hotel memory hotelDetails,string memory nonce, bytes memory signature) external{
         require(!usedNonce[nonce], "Nonce used");
         require(
@@ -1535,7 +1552,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         emit HotelRegistered(idToHotel[count]);
     }
 
-
+    // Function to book room
     function bookRoom(Booking[] memory booking,address user,bytes memory signature, string memory nonce, uint256 totalAmount) external {                 
         require(!usedNonce[nonce], "Nonce used");
         require(
@@ -1559,10 +1576,12 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         require(totalAmount == amount,"Amount Mismatch");
     }
 
+    // Returns token uri
     function uri(uint256 id) public view virtual override returns (string memory) {
         return _uri[id];
     }
-
+    
+    // Function to mint Nft
     function mintNft(address creator, string memory roomUri, uint256 hotel) private returns(uint256 id){
         uint256 nftId = tokenCount.current();
         _uri[nftId] = roomUri;
@@ -1573,7 +1592,8 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         emit Minted(nftId,creator);
         return(nftId);
     }
-
+    
+    // Function to cancel booking
     function cancelBookingUser(uint256 id, address user,string memory  nonce, bytes memory signature) external {
         require(block.timestamp < bookingDetails[id].time,"Cancel window closed");
         uint256 amount = bookingDetails[id].price;
@@ -1594,11 +1614,13 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         }
         else{
             uint256 fee =  amount*cancellationFee/10000;
+            IERC20(currency).transferFrom( address(this), treasury, fee);
             IERC20(currency).transferFrom( address(this), user, amount - fee); 
         }
         emit BookingCancelled(user, id, bookingDetails[id].hotelId);
     }
 
+    // Function to perform pre check in, stop transfer of nfts and end active Sale
     function preCheckIn(uint256 id, string memory  nonce, bytes memory signature) external {
         require(balanceOf(msg.sender,id) > 0 || owner() == msg.sender,"Access Denied" );  
         require(block.timestamp > bookingDetails[id].time - checkInTime,"CheckIn window closed");
@@ -1619,11 +1641,12 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         emit CheckedIn(id, msg.sender, bookingDetails[id].hotelId);
     }
 
+    // Function to check out, burn the nft and transfer hotel funds
     function checkOut(uint256 id, address user, string memory  nonce, bytes memory signature) external {
         require(balanceOf(msg.sender,id) > 0 || owner() == msg.sender || msg.sender == checkOutBot,
         "Access Denied" );  
         require(transferBlocked[id],"NFT wasn't checked In" );
-        require(block.timestamp > bookingDetails[id].time + checkOutTime,"CheckOut window closed");
+        require(block.timestamp > bookingDetails[id].time + 86400+ checkOutTime,"CheckOut window closed");
         require(!usedNonce[nonce], "Nonce used");
         require(
         matchSigner(
@@ -1645,6 +1668,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         return(tokenCount.current());
     }
 
+    // Hash Cancel Transaction 
     function hashCancelTransaction(
         address user,
         uint256 nft,
@@ -1655,6 +1679,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         return hash;
     }
 
+    // Hash CheckIn/ CheckOut transactions 
     function hashCheckInTransaction(
         address user,
         uint256 nft,
