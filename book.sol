@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT 
+ // SPDX-License-Identifier: MIT 
 pragma solidity 0.8.9;
 
 
@@ -1367,7 +1367,10 @@ library ECDSA {
     }
 }
 
-
+interface BukMarket{
+    function endSale(uint256 itemId) external;
+    function getTokenToItem(uint256 token) external view returns(uint256 itemId);
+}
 
 
 contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
@@ -1389,10 +1392,11 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
     address public signer;
     uint256 public platformFee;
     uint256 public cancellationFee;
-    address public usdc;
+    address public currency;
     uint256 public checkInTime;
     uint256 public checkOutTime;
     address public checkOutBot;
+    address public marketplaceContract;
 
     mapping(string => bool) public usedNonce;
 
@@ -1413,187 +1417,235 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
     
     }
 
-    event Minted(uint256 id, address minter);
-    event Booked(address user, uint256 hotel, uint256 nftId);
+
+    event Minted(uint256 indexed id, address indexed minter);
+    event Booked(address indexed user, uint256 indexed hotel, uint256 indexed nftId);
     event HotelRegistered(Hotel hotelDetails);
-    event CheckedIn(uint256 id, address user);
+    event CheckedIn(uint256 indexed id, address indexed user,  uint256 indexed hotelId);
+    event CheckedOut(uint256 indexed id, address indexed user, uint256 indexed hotelId );
+    event MarketplaceContractUpdated(address indexed market);
+    event HotelDetailsUpdated(uint256 indexed hotelId);
+    event TreasuryUpdated(address indexed treasury);
+    event SignerUpdated(address indexed signer);
+    event PlatformFeeUpdated(uint256 platformFee);
+    event CancellationFeeUpdated(uint256 cancellationFee);
+    event CurrencyAddressUpdated(address currency);
+    event CheckinTimeUpdated(uint256 time);
+    event CheckoutTimeUpdated(uint256 time);
+    event CheckoutBotupdated(address bot);
+    event UriUpdated(uint256 indexed id, string uri);
+    event TransferAllowanceUpdated(address indexed user, bool isAllowed);
+    event BookingCancelled(address user, uint256 indexed id, uint256 indexed hotelId); 
 
-    constructor(string memory NAME, address _treasury, address _signer, address _usdc ) ERC1155(NAME){
-
+    constructor(string memory NAME, address _treasury, address _signer, address _currency ) ERC1155(NAME){
        treasury = _treasury;
        signer = _signer;
-       usdc = _usdc;    
+       currency = _currency;    
        allowedToTransfer[address(this)] = true;
+    }
 
-        }
+    function setMarketplace(address _bukMarket) external onlyOwner{
+        marketplaceContract = _bukMarket;
+        emit MarketplaceContractUpdated(_bukMarket);
+    }
    
-           function setSigner(address _signer) external onlyOwner{
-               signer = _signer;
-           }
+    function setSigner(address _signer) external onlyOwner{
+        signer = _signer;
+        emit SignerUpdated(_signer);
+    }
 
-            function setTreasury(address _treasury) external onlyOwner {
-            treasury = payable(_treasury);
-             }
+    function setTreasury(address _treasury) external onlyOwner {
+        treasury = payable(_treasury);
+        emit TreasuryUpdated(_treasury);
+    }
 
+    function updateHotelDetails(Hotel memory hotel) external {
+        require(msg.sender == owner() || msg.sender == idToHotel[hotel.index].hotelManager,"Access Denied");
+        idToHotel[hotel.index] = hotel;
+        emit HotelDetailsUpdated(hotel.index);
+    }
 
-            function updateAllowedToTransfer(address user, bool allowed) external onlyOwner{
-                allowedToTransfer[user] = allowed;
-            }
+    function updateAllowedToTransfer(address user, bool allowed) external onlyOwner{
+        allowedToTransfer[user] = allowed;
+        emit TransferAllowanceUpdated(user, allowed);
+    }
 
-         function onERC1155Received(address, address, uint256, uint256, bytes memory) public virtual returns (bytes4) {
+    function updatedPlatformFee(uint256 fee) external onlyOwner{
+        platformFee = fee;
+        emit PlatformFeeUpdated(fee);
+    }
+
+    function updateCancellationFee(uint256 fee) external onlyOwner{
+        cancellationFee = fee;
+        emit CancellationFeeUpdated(fee);
+    }
+
+    function updateCurrency(address _currency) external onlyOwner{
+        currency = _currency;
+        emit CurrencyAddressUpdated(_currency);
+    }
+
+    function updateCheckinTime(uint256 time) external onlyOwner{
+        checkInTime = time;
+        emit CheckinTimeUpdated(time);
+    }
+
+    function updateCheckoutTime(uint256 time) external onlyOwner{
+        checkOutTime = time;
+        emit CheckoutTimeUpdated(time); 
+    }
+
+    function updateCheckoutBot(address bot) external onlyOwner{
+        checkOutBot = bot;
+        emit CheckoutBotupdated(bot); 
+    }
+
+    function updateUri(uint256 tokenId, string memory tokenUri) external onlyOwner{
+        _uri[tokenId] = tokenUri;
+        emit UriUpdated(tokenId, tokenUri);
+    }
+
+    function onERC1155Received(address, address, uint256, uint256, bytes memory) public virtual returns (bytes4) {
         return this.onERC1155Received.selector;
-        }
+    }
 
-        function onERC1155BatchReceived(address, address, uint256[] memory, uint256[] memory, bytes memory) public virtual returns (bytes4) {
+    function onERC1155BatchReceived(address, address, uint256[] memory, uint256[] memory, bytes memory) public virtual returns (bytes4) {
         return this.onERC1155BatchReceived.selector;
+    }
+
+    function registerHotel(Hotel memory hotelDetails,string memory nonce, bytes memory signature) external{
+        require(!usedNonce[nonce], "Nonce used");
+        require(
+        matchSigner(
+            hashHotelRegistrationTransaction(hotelDetails.hotelId, nonce),
+            signature
+        ),
+        "Not allowed to lock"
+        );
+        usedNonce[nonce] = true;
+        uint256 count = hotelCount.current();
+        idToHotel[count] = Hotel({
+            hotelId : hotelDetails.hotelId,
+            hotelUri : hotelDetails.hotelUri,
+            hotelManager : hotelDetails.hotelManager,
+            hotelTreasury : hotelDetails.hotelTreasury,
+            index : count
+        });
+        hotelCount.increment();
+        emit HotelRegistered(idToHotel[count]);
+    }
+
+
+    function bookRoom(Booking[] memory booking,address user,bytes memory signature, string memory nonce, uint256 totalAmount) external {                 
+        require(!usedNonce[nonce], "Nonce used");
+        require(
+        matchSigner(
+            hashTransaction(user, nonce, totalAmount),
+            signature
+        ),
+        "Not allowed to lock"
+        );
+        usedNonce[nonce] = true;
+        uint256 totalNfts = booking.length;
+        uint256 amount;
+        for(uint256 i=0; i< totalNfts; i++){
+            IERC20(currency).transferFrom(msg.sender, treasury, (booking[i].price*platformFee)/10000);
+            IERC20(currency).transferFrom(msg.sender, address(this), booking[i].price);
+            uint256 id = mintNft(user, booking[i].nftUri ,booking[i].hotelId);
+            bookingDetails[id] = booking[i]; 
+            amount += booking[i].price + ((booking[i].price*platformFee)/10000);
+            emit Booked(user, booking[i].hotelId, id);
         }
+        require(totalAmount == amount,"Amount Mismatch");
+    }
 
-        function registerHotel(Hotel memory hotelDetails,
-         string memory nonce, bytes memory signature) external{
-
-             require(!usedNonce[nonce], "Nonce used");
-               require(
-                matchSigner(
-                hashHotelRegistrationTransaction(hotelDetails.hotelId, nonce),
-                signature
-                ),
-                "Not allowed to lock"
-                );
-                 usedNonce[nonce] = true;
-                uint256 count = hotelCount.current();
-                idToHotel[count] = Hotel({
-                 hotelId : hotelDetails.hotelId,
-                 hotelUri : hotelDetails.hotelUri,
-                 hotelManager : hotelDetails.hotelManager,
-                 hotelTreasury : hotelDetails.hotelTreasury,
-                 index : count
-                });
-                hotelCount.increment();
-
-                emit HotelRegistered(idToHotel[count]);
-
-
-         }
-
-         function updateHotelDetails(Hotel memory hotel) external {
-             require(msg.sender == owner() || msg.sender == idToHotel[hotel.index].hotelManager,"Access Denied");
-             idToHotel[hotel.index] = hotel;
-         }
-
-        function bookRoom(Booking[] memory booking,
-         address user,bytes memory signature, string memory nonce, uint256 totalAmount) external {  
-
-               
-               require(!usedNonce[nonce], "Nonce used");
-               require(
-                matchSigner(
-                hashTransaction(user, nonce, totalAmount),
-                signature
-                ),
-                "Not allowed to lock"
-                );
-                 usedNonce[nonce] = true;
-
-                uint256 totalNfts = booking.length;
-                uint256 amount;
-                for(uint256 i=0; i< totalNfts; i++){
-                IERC20(usdc).transferFrom(msg.sender, treasury, (booking[i].price*platformFee)/10000);
-                IERC20(usdc).transferFrom(msg.sender, address(this), booking[i].price);
-                 uint256 id = mintNft(user, booking[i].nftUri ,booking[i].hotelId);
-                 bookingDetails[id] = booking[i]; 
-                 amount += booking[i].price + ((booking[i].price*platformFee)/10000);
-                emit Booked(user, booking[i].hotelId, id);
-                }
-    
-
-        }
-
-        function uri(uint256 id) public view virtual override returns (string memory) {
+    function uri(uint256 id) public view virtual override returns (string memory) {
         return _uri[id];
-       }
+    }
 
-       function mintNft(address creator, string memory roomUri, uint256 hotel) 
-       private returns(uint256 id){
-           
-        
-           uint256 nftId = tokenCount.current();
-           _uri[nftId] = roomUri;
-           _mint(creator,nftId,1,"");
-           nftToHotel[nftId] = hotel;
-           idToMinter[nftId] = creator;
-           tokenCount.increment();
-           emit Minted(nftId,creator);
-           return(nftId);
-        
-       }
+    function mintNft(address creator, string memory roomUri, uint256 hotel) private returns(uint256 id){
+        uint256 nftId = tokenCount.current();
+        _uri[nftId] = roomUri;
+        _mint(creator,nftId,1,"");
+        nftToHotel[nftId] = hotel;
+        idToMinter[nftId] = creator;
+        tokenCount.increment();
+        emit Minted(nftId,creator);
+        return(nftId);
+    }
 
-       function cancelBookingUser(uint256 id,
-       string memory  nonce, bytes memory signature) external {
-              require(block.timestamp < bookingDetails[id].time,"Cancel window closed");
-              uint256 amount = bookingDetails[id].price;
-              require(!usedNonce[nonce], "Nonce used");
-               require(
-                matchSigner(
-                hashCancelTransaction( msg.sender , id, nonce, amount),
-                signature
-                ),
-                "Not allowed to lock"
-                );
-                 usedNonce[nonce] = true;    
-           require(balanceOf(msg.sender,id) > 0 ||
-            owner() == msg.sender || msg.sender == idToHotel[bookingDetails[id].hotelId].hotelManager,"Access Denied" );
-           _burn( msg.sender, id, 1 );
-           if( owner() == msg.sender || msg.sender == idToHotel[bookingDetails[id].hotelId].hotelManager){
-           IERC20(usdc).transferFrom( address(this), msg.sender, amount);
-           }
-           else{
+    function cancelBookingUser(uint256 id, address user,string memory  nonce, bytes memory signature) external {
+        require(block.timestamp < bookingDetails[id].time,"Cancel window closed");
+        uint256 amount = bookingDetails[id].price;
+        require(!usedNonce[nonce], "Nonce used");
+        require(
+        matchSigner(
+            hashCancelTransaction( user , id, nonce, amount),
+            signature
+        ),
+        "Not allowed to lock"
+        );
+        usedNonce[nonce] = true;    
+        require((balanceOf(msg.sender,id) > 0 && user == msg.sender) ||
+        owner() == msg.sender || msg.sender == idToHotel[bookingDetails[id].hotelId].hotelManager,"Access Denied" );
+        _burn( user, id, 1 );
+        if( owner() == msg.sender || msg.sender == idToHotel[bookingDetails[id].hotelId].hotelManager){
+            IERC20(currency).transferFrom( address(this), user, amount);
+        }
+        else{
             uint256 fee =  amount*cancellationFee/10000;
-            IERC20(usdc).transferFrom( address(this), msg.sender, amount - fee); 
-           }
-       
-            
-       }
+            IERC20(currency).transferFrom( address(this), user, amount - fee); 
+        }
+        emit BookingCancelled(user, id, bookingDetails[id].hotelId);
+    }
 
-       function checkIn(uint256 id, string memory  nonce, bytes memory signature) external {
-         require(balanceOf(msg.sender,id) > 0 || owner() == msg.sender,"Access Denied" );  
-         require(block.timestamp > bookingDetails[id].time - checkInTime,"CheckIn window closed");
-         require(!usedNonce[nonce], "Nonce used");
-               require(
-                matchSigner(
-                hashCheckInTransaction( msg.sender , id, nonce),
-                signature
-                ),
-                "Not allowed to lock"
-                );
-                 usedNonce[nonce] = true;   
-         transferBlocked[id] = true;
-       }
+    function preCheckIn(uint256 id, string memory  nonce, bytes memory signature) external {
+        require(balanceOf(msg.sender,id) > 0 || owner() == msg.sender,"Access Denied" );  
+        require(block.timestamp > bookingDetails[id].time - checkInTime,"CheckIn window closed");
+        require(!usedNonce[nonce], "Nonce used");
+        require(
+        matchSigner(
+        hashCheckInTransaction( msg.sender , id, nonce),
+        signature
+        ),
+        "Not allowed to lock"
+        );
+        usedNonce[nonce] = true;   
+        transferBlocked[id] = true;
+        uint256 itemId = BukMarket(marketplaceContract).getTokenToItem(id);
+        if(itemId != 0){
+            BukMarket(marketplaceContract).endSale(itemId);
+        }
+        emit CheckedIn(id, msg.sender, bookingDetails[id].hotelId);
+    }
 
-       function checkOut(uint256 id, address user, string memory  nonce, bytes memory signature) external {
-         require(balanceOf(msg.sender,id) > 0 || owner() == msg.sender || msg.sender == checkOutBot,
-         "Access Denied" );  
-         require(transferBlocked[id],"NFT wasn't checked In" );
-         require(block.timestamp > bookingDetails[id].time + checkOutTime,"CheckOut window closed");
-         require(!usedNonce[nonce], "Nonce used");
-               require(
-                matchSigner(
-                hashCheckInTransaction( user , id, nonce),
-                signature
-                ),
-                "Not allowed to lock"
-                );
-                 usedNonce[nonce] = true;   
+    function checkOut(uint256 id, address user, string memory  nonce, bytes memory signature) external {
+        require(balanceOf(msg.sender,id) > 0 || owner() == msg.sender || msg.sender == checkOutBot,
+        "Access Denied" );  
+        require(transferBlocked[id],"NFT wasn't checked In" );
+        require(block.timestamp > bookingDetails[id].time + checkOutTime,"CheckOut window closed");
+        require(!usedNonce[nonce], "Nonce used");
+        require(
+        matchSigner(
+        hashCheckInTransaction( user , id, nonce),
+        signature
+        ),
+        "Not allowed to lock"
+        );
+        usedNonce[nonce] = true;   
         _burn( user, id, 1 ); 
-        IERC20(usdc).transferFrom( address(this), msg.sender, bookingDetails[id].price);
-       }
+        IERC20(currency).transferFrom( address(this), idToHotel[bookingDetails[id].hotelId].hotelTreasury,
+        bookingDetails[id].price);
+        emit CheckedOut(id, msg.sender, bookingDetails[id].hotelId);
+    }
 
-    
+     
    // returns the total amount of NFTs minted
-       function getTokenCounter() external view returns (uint256 tracker){
+    function getTokenCounter() external view returns (uint256 tracker){
         return(tokenCount.current());
-       }
+    }
 
-       function hashCancelTransaction(
+    function hashCancelTransaction(
         address user,
         uint256 nft,
         string memory nonce,
@@ -1612,7 +1664,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         return hash;
     }
 
-       function hashTransaction(
+    function hashTransaction(
         address user,
         string memory nonce,
         uint256 amount
@@ -1621,7 +1673,6 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         return hash;
     }
 
-
     function hashHotelRegistrationTransaction(
         string memory hotelId,
         string memory nonce
@@ -1629,8 +1680,6 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         bytes32 hash = keccak256(abi.encodePacked(hotelId , nonce));
         return hash;
     }
-
-
 
     function matchSigner(bytes32 hash, bytes memory signature)
         public
@@ -1665,8 +1714,7 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
             "ERC1155: caller is not owner nor approved"
         );
         require(allowedToTransfer[msg.sender], "Access Denied");
-        _safeTransferFrom(from, to, id, amount, data);
-        
+        _safeTransferFrom(from, to, id, amount, data);  
     }
 
     function safeBatchTransferFrom(
@@ -1682,12 +1730,10 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         );
 
         require(allowedToTransfer[msg.sender], "Access Denied");
-
         uint256 total = ids.length;
         for(uint256 i =0; i<total;i++){
-        require(transferBlocked[ids[i]] == false,"Transfer has been stopped");
-        _safeTransferFrom(from, to, ids[i], amounts[i], data);
-
+            require(transferBlocked[ids[i]] == false,"Transfer has been stopped");
+            _safeTransferFrom(from, to, ids[i], amounts[i], data);
         }
    
     }
@@ -1697,6 +1743,8 @@ contract Buk is ERC1155, IERC1155Receiver, Ownable, ReentrancyGuard{
         payable(wallet).transfer(balanceOfContract);
     }
 
-
+    function withdrawTokens(address token, address wallet) external onlyOwner{
+        IERC20(token).transferFrom(address(this), wallet, IERC20(token).balanceOf(address(this)));
+    }
 
 }
